@@ -9,6 +9,12 @@ import numpy as np
 from folium.plugins import HeatMap, MarkerCluster
 
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+OUTPUT_FOLDER = os.path.join(BASE_DIR, "templates")
+OUTPUT_PATH = os.path.join(OUTPUT_FOLDER, "crime_map.html")
+
+
+
 def get_connection():
     return mysql.connector.connect(
         host="localhost",
@@ -16,6 +22,8 @@ def get_connection():
         password="12345",
         database="cpaps_db"
     )
+
+
 
 def get_color(severity):
 
@@ -29,6 +37,7 @@ def get_color(severity):
     }
 
     return colors.get(severity, "gray")
+
 
 def get_icon(category):
 
@@ -44,6 +53,7 @@ def get_icon(category):
 
     return icons.get(category, "info-sign")
 
+
 def safe_text(value):
 
     if pd.isna(value):
@@ -54,10 +64,15 @@ def safe_text(value):
 
 def safe_number(value):
 
-    if pd.isna(value):
+    try:
+        if pd.isna(value):
+            return 0
+
+        return int(float(value))
+
+    except (ValueError, TypeError, OverflowError):
         return 0
 
-    return int(float(value))
 
 
 def load_crime_data():
@@ -100,7 +115,9 @@ def load_crime_data():
 
         df = pd.read_sql_query(query, conn)
 
-        print(f"Successfully loaded {len(df)} crime records.")
+        print(
+            f"Successfully loaded {len(df)} crime records."
+        )
 
         return df
 
@@ -118,14 +135,15 @@ def load_crime_data():
 
     finally:
 
-        if conn and conn.is_connected():
+        if conn is not None and conn.is_connected():
             conn.close()
+
 
 def build_crime_map():
 
     print("\nBuilding interactive CPAPS crime map...\n")
 
-    # Load data
+    # Load database records
     df = load_crime_data()
 
     if df.empty:
@@ -134,21 +152,21 @@ def build_crime_map():
 
         return None
 
-    # Convert coordinates to numeric values
+
     df["latitude"] = pd.to_numeric(
-        df["latitude"], errors="coerce"
+        df["latitude"],
+        errors="coerce"
     )
 
     df["longitude"] = pd.to_numeric(
-        df["longitude"], errors="coerce"
+        df["longitude"],
+        errors="coerce"
     )
 
-    # Remove invalid coordinates
     df = df.dropna(
         subset=["latitude", "longitude"]
     ).copy()
 
-    # Keep coordinates within valid geographic ranges
     df = df[
         df["latitude"].between(-90, 90)
         & df["longitude"].between(-180, 180)
@@ -160,9 +178,10 @@ def build_crime_map():
 
         return None
 
-    print(f"Valid georeferenced incidents: {len(df)}")
+    print(
+        f"Valid georeferenced incidents: {len(df)}"
+    )
 
-    # Normalize severity and category
     df["severity_level"] = (
         df["severity_level"]
         .fillna("Unknown")
@@ -178,18 +197,38 @@ def build_crime_map():
         .str.strip()
     )
 
+    df["county"] = (
+        df["county"]
+        .fillna("Unknown")
+        .astype(str)
+        .str.strip()
+    )
+
+
     center_lat = df["latitude"].mean()
     center_lon = df["longitude"].mean()
 
     m = folium.Map(
         location=[center_lat, center_lon],
         zoom_start=7,
-        tiles="CartoDB dark_matter",
+        tiles=None,
         control_scale=True
     )
-    # Offsets are only for visual marker separation.
-    # Original coordinates remain unchanged for heatmaps
-    # and hotspot calculations.
+
+    # Public OpenStreetMap tiles.
+    # No API key is required.
+
+    folium.TileLayer(
+        tiles="OpenStreetMap",
+        name="OpenStreetMap",
+        control=True,
+        show=True
+    ).add_to(m)
+
+
+    # Small offsets prevent markers at identical
+    # coordinates from completely overlapping.
+    # Original coordinates are retained for analysis.
 
     np.random.seed(42)
 
@@ -365,6 +404,8 @@ def build_crime_map():
 
     marker_layer.add_to(m)
 
+
+
     hotspot_layer = folium.FeatureGroup(
         name="County Hotspot Zones",
         show=False
@@ -390,7 +431,6 @@ def build_crime_map():
 
         count = int(row["incident_count"])
 
-        # Scale circles according to incident count.
         radius = 1000 + (
             count / max_count
         ) * 9000
@@ -441,6 +481,7 @@ def build_crime_map():
 
     hotspot_layer.add_to(m)
 
+
     severity_options = [
         ("Critical", "red"),
         ("High", "orange"),
@@ -451,11 +492,8 @@ def build_crime_map():
     for severity, color in severity_options:
 
         sev_layer = folium.FeatureGroup(
-
             name=f"{severity} Severity",
-
             show=False
-
         )
 
         sev_df = df[
@@ -492,11 +530,14 @@ def build_crime_map():
 
         sev_layer.add_to(m)
 
+   
 
     folium.LayerControl(
         collapsed=False,
         position="topright"
     ).add_to(m)
+
+   
 
     legend_html = """
     <div style="
@@ -560,23 +601,14 @@ def build_crime_map():
         folium.Element(legend_html)
     )
 
-    output_folder = "templates"
 
     os.makedirs(
-        output_folder,
+        OUTPUT_FOLDER,
         exist_ok=True
     )
 
-    output_path = os.path.join(
-        output_folder,
-        "crime_map.html"
-    )
+    m.save(OUTPUT_PATH)
 
-    m.save(output_path)
-
-    # =====================================================
-    # 16. SUCCESS MESSAGE
-    # =====================================================
 
     print("\n===================================")
 
@@ -588,21 +620,24 @@ def build_crime_map():
 
     print(f"Counties covered: {len(county_totals)}")
 
-    print("Layers generated:")
+    print("\nLayers generated:")
 
-    print("1. Crime Heatmap")
-    print("2. Individual Crime Incidents")
-    print("3. County Hotspot Zones")
-    print("4. Critical Severity")
-    print("5. High Severity")
-    print("6. Medium Severity")
-    print("7. Low Severity")
+    print("1. OpenStreetMap Base Layer")
+    print("2. Crime Heatmap")
+    print("3. Individual Crime Incidents")
+    print("4. Crime Clusters")
+    print("5. County Hotspot Zones")
+    print("6. Critical Severity")
+    print("7. High Severity")
+    print("8. Medium Severity")
+    print("9. Low Severity")
 
-    print(f"\nMap saved to: {output_path}")
+    print(f"\nMap saved to: {OUTPUT_PATH}")
 
     print("===================================\n")
 
-    return output_path
+    return OUTPUT_PATH
+
 
 
 if __name__ == "__main__":
@@ -614,5 +649,5 @@ if __name__ == "__main__":
     except Exception as e:
 
         print("\nAn unexpected error occurred:")
-
         print(e)
+
